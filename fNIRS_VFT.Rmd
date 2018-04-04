@@ -1,0 +1,469 @@
+---
+title: "fNIRS_VFT"
+output: html_document
+---
+
+
+```{r load data with intergral analysis}
+require(stringr)
+require(readr)
+require(R.matlab)
+require(expm)
+require(pheatmap)
+require(zoo)
+require(plotly)
+require(ggplot2)
+
+vft_dat = read.csv("/Users/guoqingwang/Google Drive/ProjectWithMartin/fNIRS/fNIRs/processed12_18_2015/VFT/HbVFTall_modified/vft_oxy.csv",header = F)
+
+wid = 50
+roll.var = rowMeans(t(rollapply(t(vft_dat),width = wid,sd)))
+
+hist(roll.var,breaks = seq(0,3,by =1e-4))
+threshold =0.05
+length(which(roll.var>threshold))
+
+nchannels = 52
+nsubj = dim(vft_dat)[1]/nchannels
+
+roll.var.mat = delbox.reshape(roll.var,nsubj,nchannels = nchannels)
+ind_large = which(abs(roll.var.mat)>threshold,arr.ind = T)
+```
+
+
+```{r prepare for MFPCA}
+require(reshape2)
+
+#reshape into a matrix
+delbox.reshape = function(delbox_intg,nsubj,nchannels){
+  delbox_intg_reshape = matrix(NA,nrow = nsubj,ncol = nchannels)
+  for(i in 1:nsubj){
+    for (j in 1:nchannels){
+      delbox_intg_reshape[i,j] = delbox_intg[(i-1)*nchannels+j]
+    }
+  }
+  return(delbox_intg_reshape)
+}
+#writeMat("Delbox.mat",A=delbox_intg_reshape)
+
+jet.colors <-
+  colorRampPalette(c("#00007F", "blue", "#007FFF", "cyan",
+                     "#7FFF7F", "yellow", "#FF7F00", "red", "#7F0000"))
+
+data_plot = as.data.frame(roll.var.mat)
+rownames(roll.var.mat) = 1:nsubj
+colnames(roll.var.mat) = 1:nchannels
+
+roll.temp = melt(roll.var.mat)
+roll.temp$Subjects = roll.temp$Var1
+roll.temp$Channels = roll.temp$Var2
+roll.temp$RunningSD= roll.temp$value
+ggplot(data = roll.temp) + geom_tile(aes(x=Subjects, y=Channels, fill=RunningSD))+scale_fill_gradientn(colours = jet.colors(10))+theme_bw()+scale_x_continuous(breaks = seq(0,50,by=5))
+
+```
+
+```{r}
+
+rejection_matrix = matrix(1,nrow = nsubj,ncol = nchannels)
+rejection_matrix[ind_large]=0 #0 means reject
+rejection_list = as.vector(t(rejection_matrix))
+
+tn = dim(vft_dat)[2]
+
+vft_dat1 = vft_dat[rejection_list==1,]
+num_channel = rowSums(rejection_matrix) #number of channels in each subjects
+cum_channel_number = cumsum(num_channel)
+
+#calculate the grand mu
+
+    mu_subj = matrix(nrow = nsubj,ncol = tn)
+    for (i in 1:nsubj){
+      mu_subj[i,] = colMeans(vft_dat1[(cum_channel_number[i]-num_channel[i]+1):cum_channel_number[i],])
+    }
+    mu = colMeans(mu_subj)
+    par(mfrow = c(1,1))
+    plot((1:tn)/10,mu,type = "l", xlab = "time(sec)", main = "VFT overall mean")
+    
+    vft_dat2 = vft_dat
+    vft_dat2[rejection_list==0,] = rep(0,tn)
+# calculate the channel specific mean
+    eta = matrix(0,nchannels,tn)
+    for (j in 1:nchannels){
+      eta[j,] = colSums(vft_dat2[(0:(nsubj-1)*nchannels) + j, ])/num_channel[j] - mu
+    }
+    ngrid= 3
+    par(mfrow=c(ngrid,ngrid))
+    for(k in 1:(ngrid^2))
+    plot(eta[k,],type = "l", ylab = "eta", xlab = "", main = paste("eta", k))
+
+
+# calculate the resid
+      resid.temp = matrix(0,nrow = nsubj*nchannels,ncol=tn)
+      for(j in 1:nchannels){
+          resid.temp[(0:(nsubj-1)*nchannels) + j,] = t(t(vft_dat[ (0:(nsubj-1)*nchannels)+j,])-eta[j,]-mu)
+      }
+      resid = resid.temp[rejection_list==1,] #remove rejected channels
+
+###     Estimate the three covariance functions: overall covariance G, 
+###     between covariance Gb and within covariance Gw
+      library(Matrix)
+    Gb <- matrix(0, tn, tn)
+    
+    G = G.temp = matrix(0, tn, tn)
+    for (m in 1: nsubj){
+      G.temp = matrix(0, tn, tn)
+         for (k in 1: num_channel[m]){
+          G.temp = G.temp+tcrossprod(resid[cum_channel_number[m]-num_channel[m]+k,])
+         }
+       G = G+G.temp/num_channel[m]       
+    }
+    G = G/nsubj
+    
+    index.pair = vector("list",nsubj)
+    cur.index = rep(1,nsubj)
+  for(i in 1:nsubj){
+    index.pair[[i]] = matrix(0,num_channel[i]*(num_channel[i]-1)/2,2)
+    for (k in 1:(num_channel[i]-1)){
+      for(l in (k+1):num_channel[i]){
+        index.pair[[i]][cur.index[i],] = c(k,l)
+        cur.index[i] = cur.index[i]+1
+      }
+    }
+  }
+    Gw = Gw.temp =  matrix(0, tn, tn)
+    for (m in 1: nsubj){
+      Gw.temp = matrix(0, tn, tn)
+        Npairs.temp = num_channel[m]*(num_channel[m]-1)/2
+         for (k in 1: Npairs.temp){
+           resid.pair.temp = resid[index.pair[[m]][k,1]+cum_channel_number[m]-num_channel[m],]
+                            -resid[index.pair[[m]][k,2]+cum_channel_number[m]-num_channel[m],]
+           Gw.temp = Gw.temp+tcrossprod(resid.pair.temp)
+         }
+       Gw = Gw + Gw.temp/Npairs.temp      
+    }
+    Gw = Gw/nsubj
+    
+    Gb = G - Gw 
+
+e1 = eigen(Gb)
+e2 = eigen(Gw)
+
+# output the eigenvalues
+
+    N = tn
+    tlength = 1
+    
+fpca1.value <- e1$values* tlength / N
+fpca2.value <- e2$values* tlength / N
+
+
+    
+#     Keep only non-negative eigenvalues
+    fpca1.value <- ifelse(fpca1.value>=0, fpca1.value, 0)
+    fpca2.value <- ifelse(fpca2.value>=0, fpca2.value, 0)
+###     Calculate the percentage of variance that are explained by the components
+
+    percent1 <- (fpca1.value)/sum(fpca1.value)
+    percent2 <- (fpca2.value)/sum(fpca2.value)
+    
+
+    ###     Decide the number of components that are kept at level 1 and 2. The general
+###     rule is to stop at the component where the cumulative percentage of variance 
+###     explained is greater than 90% and the variance explained by any single component
+###     after is less than 1/N. The number of components are also no less than the 
+###     pre-determined minimum values min.K1 or min.K2.
+    min.K1 = 4
+    min.K2 = 4
+    K1 <- max( which(cumsum(percent1) < 0.9 | percent1 > 1/tn ) + 1, min.K1 )
+    K2 <- max( which(cumsum(percent2) < 0.9 | percent2 > 1/tn ) + 1, min.K2 )
+
+###     estimate eigen vectors for discretized covariance matrices and
+###     transform them into norm one eigenfunctions
+    fpca1.vectors <- e1$vectors[, 1:K1]*sqrt(N/tlength)
+    fpca2.vectors <- e2$vectors[, 1:K2]*sqrt(N/tlength)
+    
+###     The eigenfunctions are unique only up to a change of signs.
+###     Select the signs of eigenfunctions so that the integration over the domain 
+###     is non-negative
+    
+        for(i in 1:K1) {
+        v2 <- fpca1.vectors[,i]
+        tempsign <- sum(v2)
+        fpca1.vectors[,i] <- ifelse(tempsign<0, -1,1) * v2
+        }
+        for(i in 1:K2) {
+            v2 <- fpca2.vectors[,i]
+            tempsign <- sum(v2)
+            fpca2.vectors[,i] <- ifelse(tempsign<0, -1,1) * v2
+        }
+
+    par(mfrow = c(2,3))
+        for(i in 1:3){
+          plot((1:tn)/10,fpca1.vectors[,i], main = paste0("L1 eigenfunc",i, " ",round(percent1[i]*100,2),"%"),ylab="",xlab="time (sec)",type = 'l')
+        }
+        
+        for(i in 1:3){
+          plot((1:tn)/10,fpca2.vectors[,i], main = paste0("L2 eigenfunc",i," ",round(percent2[i]*100,2),"%"),ylab="",xlab="time (sec)",type = 'l')
+        }    
+
+###     First, calculate the inner product (the cosine of the angles) between 
+###     level 1 eigenfunctions and level 2 eigenfunctions
+    cross.integral = t(fpca1.vectors)%*%fpca2.vectors*tlength/N
+###     Next, calculate the inner product of each centered function with the 
+###     level 1 or level 2 eigenfunctions
+    
+    resid.temp2 = resid.temp
+    resid.temp2[rejection_list==0,] = rep(0,tn)
+    
+###     Next, calculate the inner product of each centered function with the 
+###     level 1 or level 2 eigenfunctions
+    M= nsubj; J = nchannels
+
+    int1 <- matrix(0, M*J, K1)
+    int2 <- matrix(0, M*J, K2)
+    for(i in 1:(M*J))   {
+        for(j in 1:K1)  {
+            int1[ i ,j] <- sum( resid.temp2[i,] * fpca1.vectors[,j] ) * tlength /N
+        }
+        for(j in 1:K2) {
+            int2[ i ,j] <- sum( resid.temp2[i,] * fpca2.vectors[,j] ) * tlength /N    
+        }
+    }
+
+    
+###     Finally, calculate the principal component scores based on the formulas
+###     given in the paper.
+        s1 <- matrix(NA, nsubj*nchannels, K1)
+        s2 <- matrix(NA, nsubj*nchannels, K2)
+        library(MASS)
+        design.xi <- ginv( diag(rep(1,K1)) - cross.integral %*% t(cross.integral) )
+        for(m in 1:nsubj) {
+            resd <- rep(0, K1)
+            for(j in 1:J) {
+                index <- (m-1) * J + j
+                resd <- resd + ( int1[index,] - drop(cross.integral %*% int2[index,]) )/num_channel[m]
+            }
+            index.m <- ( (m-1) * J + 1 ) : (m*J)
+            xi.temp <- design.xi %*% resd
+            s1[index.m,] <- matrix(rep(xi.temp, each=J), nrow=J)
+            s2[index.m,] = t(t(int2[index.m,]) - drop( t(cross.integral) %*% xi.temp ))
+        }
+        
+        s1.reshape = array(NA, c(nsubj,nchannels,K1))
+        s2.reshape = array(NA, c(nsubj,nchannels,K2))
+        for(i in 1:K2) {
+          s.temp = delbox.reshape(s2[,i],nsubj = nsubj, nchannels = nchannels)
+          s.temp[ind_large]=NA;
+          s2.reshape[,,i]=s.temp
+        }
+        s1.reshape1 = matrix(nrow = nsubj,ncol = K1)
+        for(i in 1:K1){ 
+          s1.reshape[,,i] = delbox.reshape(s1[,i],nsubj = nsubj,nchannels = nchannels)
+          s1.reshape1[,i] = s1.reshape[,1,i]
+          }
+        
+        plot(s1.reshape[,1,1],s1.reshape[,1,2])
+        
+        par(mfrow = c(4,4))
+        for(k in 1:16){
+            plot(s2.reshape[,k,1],s1.reshape[,1,1],ylab = "S.LEVEL1", xlab = paste("S.LEVEL2 FLIPPED Channel",k ))
+        }
+            
+            par(mfrow = c(1,1))
+            k.level = 2
+        plot(s1[rejection_list==1,k.level],s2[rejection_list==1,k.level])            
+            
+        
+        rho = sum(fpca1.value)/(sum(fpca1.value)+sum(fpca2.value))
+
+        vft_dat.results=list(K1=K1,K2=K2,lambda1=fpca1.value,lambda2=fpca2.value,
+                            phi1=fpca1.vectors,phi2=fpca2.vectors,rho = rho,scores1=s1.reshape1,
+                            scores2=s2.reshape, mu=mu,eta=t(eta),reject.index=ind_large) 
+
+        save(vft_dat.results,file="vft_dat_result.rdata")
+        
+                vft.subj.scores = vft_dat.results$scores1
+        colnames(vft.subj.scores) = paste0("Comp",1:22)
+        save(vft.subj.scores,file ="vft_subj_scores.rdata")
+```
+
+```{r plot eigenfunctions}
+
+library(xtable)
+klevel = K1
+results.table = data.frame(phi1 = fpca1.value[1:klevel], phi2=fpca2.value[1:klevel])
+results.table10000 = data.frame(phi1 = fpca1.value[1:klevel]*1e4, phi2=fpca2.value[1:klevel]*1e4)
+xtable(results.table10000)
+
+totalvaribility = sum(fpca1.value+fpca2.value)
+cumu.table = results.table/totalvaribility
+cumu.table$cumulative = cumsum(cumu.table$phi1+cumu.table$phi2)
+cumu.table[klevel+1,] = apply(cumu.table,2,sum)
+xtable(cumu.table)
+```
+
+
+
+```{r load demographic info & generate input for analysis}
+library(readxl)
+path = "/Users/guoqingwang/Google Drive/ProjectWithMartin/fNIRS/fNIRs/demog12_18_15/Data book for Hepatic disease study (10001-10055).xlsx"
+data_id = read_excel(path, sheet = 1,skip = 2)
+data_MH = read_excel(path, sheet = 2)
+data_ADL = read_excel(path, sheet = 3)
+data_CCI = read_excel(path, sheet = 4)
+data_lab = read_excel(path, sheet = 5)
+data_MMSE = read_excel(path, sheet = 6,skip = 1)
+data_CAM = read_excel(path, sheet = 7)
+data_DRS98 = read_excel(path, sheet = 9)
+
+demog.data = list(id = data_id, MN = data_MH, ADL = data_ADL, CCI = data_CCI, lab = data_lab,
+                  MMSE = data_MMSE, CAM = data_CAM, DRS98 = data_DRS98)
+save(demog.data,file = "demographicData.rdata")
+
+combined_data = data.frame(cam = ifelse(data_id[,24]=="positive",yes = 1,no = 0),
+                           gender = ifelse(data_id[,6]=="M",yes = 1, no = 0),
+                           age = data_id[,7],
+                           YoE = data_MH[,5],
+                           meld = data_lab[,21], 
+                           cci = as.vector(t(data_CCI[21,3:57])), 
+                           inr = data_lab[,20],
+                           dsr = data_id[,25],
+                           sat = data_id[,23],
+                           vft = data_id[,12])
+colnames(combined_data) = c("cam","gender","age","YoE","meld","cci","inr","dsr","sat","vft")
+demograph = combined_data
+demograph$cam = as.factor(demograph$cam)
+save(file = "demographicInfo.rdata", demograph)
+
+
+#combined with score information
+s1.l1.vft = vft_dat.results$scores1[,1]
+s1.l2.vft = vft_dat.results$scores1[,2]
+s1.l3.vft = vft_dat.results$scores1[,3]
+s2.l1.vft = vft_dat.results$scores2[,,1]
+s2.l2.vft = vft_dat.results$scores2[,,2]
+s2.l3.vft = vft_dat.results$scores2[,,3]
+
+library(mice)
+#impute s2
+score21.vft.imputed = mice(data=t(s2.l1.vft),m = 5, method = "pmm", maxit = 20, seed = 500)
+score22.vft.imputed = mice(data=t(s2.l2.vft),m = 5, method = "pmm", maxit = 20, seed = 500)
+score23.vft.imputed = mice(data=t(s2.l3.vft),m = 5, method = "pmm", maxit = 20, seed = 500)
+
+s2.l1.vft.imputed = t(complete(score21.vft.imputed))
+s2.l2.vft.imputed = t(complete(score22.vft.imputed))
+s2.l3.vft.imputed = t(complete(score23.vft.imputed))
+
+load("demographicInfo.rdata")
+vft.comb_data = cbind(demograph[-c(51),],s1.l1.vft,s1.l2.vft,s1.l3.vft,s2.l1.vft.imputed,s2.l2.vft.imputed,s2.l3.vft.imputed)
+vft.comb_data = vft.comb_data[-33,]
+
+save(file = "vft_score_demog.rdata",vft.comb_data)
+```
+
+```{r plots}
+comb_data = vft.comb_data
+comb_data$cam = as.factor(comb_data$cam)
+comb_data$gender = as.numeric(comb_data$gender)
+library(ggplot2)
+library(ggpubr)
+s1_age = ggplot(data = comb_data,aes(age,s1.l1.vft))+geom_point()+geom_smooth()+labs(title = 'score 1 vs. age')+theme(axis.title.x=element_blank(),axis.title.y = element_blank(),plot.title = element_text(hjust = 0.5))
+s1_sat = ggplot(data = comb_data,aes(sat,s1.l1.vft))+geom_point()+geom_smooth()+labs(title = 'score 1 vs. SAT')+theme(axis.title.x=element_blank(),axis.title.y = element_blank(),plot.title = element_text(hjust = 0.5))
+s1_cam = ggplot(data = comb_data,aes(factor(cam),s1.l1.vft))+geom_boxplot()+labs(title = 'score 1 vs. CAM')+theme(axis.title.x=element_blank(),axis.title.y = element_blank(),plot.title = element_text(hjust = 0.5))
+cam_gender = ggplot(data = comb_data,aes(x=factor(cam),fill=factor(gender)))+geom_bar()+labs(title = 'CAM vs. age')+theme(axis.title.x=element_blank(),axis.title.y = element_blank(),plot.title = element_text(hjust = 0.5))
+s1_yoe = ggplot(data = comb_data,aes(factor(YoE),s1.l1.vft))+geom_boxplot() +labs(title = 'score 1 vs. age')+theme(axis.title.x=element_blank(),axis.title.y = element_blank(),plot.title = element_text(hjust = 0.5))
+s1_gender = ggplot(data = comb_data,aes(factor(gender),s1.l1.vft))+geom_boxplot()+labs(title = 'score 1 vs. gender')+theme(axis.title.x=element_blank(),axis.title.y = element_blank(),plot.title = element_text(hjust = 0.5))
+
+s1_DSR = ggplot(data = comb_data,aes(dsr,s1.l1.vft))+geom_point()+geom_smooth()+labs(title = 'score 1 vs. DSR')+theme(axis.title.x=element_blank(),axis.title.y = element_blank(),plot.title = element_text(hjust = 0.5))
+
+s1_VFT = ggplot(data = comb_data,aes(vft,s1.l1.vft))+geom_point()+geom_smooth()+labs(title = 'score 1 vs. VFT')+theme(axis.title.x=element_blank(),axis.title.y = element_blank(),plot.title = element_text(hjust = 0.5))
+
+s1_s2 = ggplot(data = comb_data,aes(s1.level2,s1.l1.vft))+geom_point()+labs(title = 'score 1 vs. score 2')+theme(axis.title.x=element_blank(),axis.title.y = element_blank(),plot.title = element_text(hjust = 0.5))
+
+s1_meld = ggplot(data = comb_data,aes(meld,s1.l1.vft))+geom_point()+geom_smooth()+labs(title = 'score 1 vs. MELD')+theme(axis.title.x=element_blank(),axis.title.y = element_blank(),plot.title = element_text(hjust = 0.5))
+
+s1_cci = ggplot(data = comb_data,aes(cci,s1.l1.vft))+geom_point()+geom_smooth()+labs(title = 'score 1 vs. CCI')+theme(axis.title.x=element_blank(),axis.title.y = element_blank(),plot.title = element_text(hjust = 0.5))
+s1_inr = ggplot(data = comb_data,aes(inr,s1.l1.vft))+geom_point()+geom_smooth()+labs(title = 'score 1 vs. INR')+theme(axis.title.x=element_blank(),axis.title.y = element_blank(),plot.title = element_text(hjust = 0.5))
+
+ggarrange(s1_s2, s1_cam, s1_gender, s1_age, s1_sat, s1_VFT, s1_meld, s1_cci, s1_inr,ncol = 3, nrow = 3)
+
+```
+
+```{r svm}
+library(e1071)
+load("vft_score_demog.rdata")
+svm.vft.input = data.frame(gender = vft.comb_data$gender, scale(vft.comb_data[,-c(1,2)]))
+svm_tune.vft = tune(svm, train.x = svm.vft.input, train.y = vft.comb_data$cam, kernel="linear", ranges=list(epsilon = seq(0,1,0.1), cost = 2^(2:9)))
+#svm_tune.vft$best.parameters
+# epsilon = 0; cost = 4
+svm.vft = svm_tune.vft$best.model
+svm_tune.vft$best.parameters
+weights.vft = t(svm.vft$coefs) %*% svm.vft$SV
+
+
+svm.vft.input.brain = svm.vft.input[,-c(1:9)]
+svm_tune.vft.brain = tune(svm, train.x = svm.vft.input.brain, train.y = vft.comb_data$cam, kernel="linear", ranges=list(epsilon = seq(0,1,0.1), cost = 2^(2:9)))
+svm.vft.brain = svm_tune.vft.brain$best.model
+weights.vft.brain = t(svm.vft.brain$coefs) %*% svm.vft.brain$SV
+
+write.csv(x = weights.vft.brain[1+3:54],file = "vft_brain_1.csv")
+write.csv(x = weights.vft.brain[1+55:106],file = "vft_brain_2.csv")
+write.csv(x = weights.vft.brain[108:159],file = "vft_brain_3.csv")
+
+write.csv(x = weights.vft[10+3:54],file = "vft_overall_1.csv")
+write.csv(x = weights.vft[10+55:106],file = "vft_overall_2.csv")
+write.csv(x = weights.vft[10+107:158],file = "vft_overall_3.csv")
+
+set.seed(1234)
+variables = 1:10# 1:10 means brain only, 1 means including demographic info
+nsubj = 53
+pred.vft.brain = 1:nsubj
+for(i in 1:nsubj){
+  test = vft.comb_data[i,]
+  train = vft.comb_data[-i,]
+  fitBrainCV = svm(x = train[,-variables], y = train$cam, kernel="linear",epsilon = 0,cost = 4,probability = T)
+  temp = predict(fitBrainCV,test[,-variables], decision.values =TRUE, probability = TRUE)
+  pred.vft.brain[i] = attr(temp, "probabilities")[,2]
+}
+
+variables1 = 1# 1:10 means brain only, 1 means including demographic info
+variables2 = 2:10
+nsubj = 53
+pred1.vft = 1:nsubj
+pred.vft.demo = 1:nsubj
+for(i in 1:nsubj){
+  test = vft.comb_data[i,]
+  train = vft.comb_data[-i,]
+  
+  fitsvm = svm(x = train[,-variables1], y = train$cam, kernel="linear",epsilon = 0,cost = 4,probability = T)
+  temp = predict(fitsvm,test[,-variables1], decision.values =TRUE, probability = TRUE)
+  pred1.vft[i] = attr(temp, "probabilities")[,2]
+  
+  fitsvm.demo = svm(x = train[,variables2], y = train$cam, kernel="linear",epsilon = 0,cost = 4,probability = T)
+  temp2 = predict(fitsvm.demo,test[,variables2], decision.values =TRUE, probability = TRUE)
+  pred.vft.demo[i] = attr(temp2, "probabilities")[,2]
+}
+library(pROC)
+par(mfrow = c(1,1))
+roc1.vft = roc(vft.comb_data$cam~pred.vft.brain[1:nsubj])
+roc2.vft = roc(vft.comb_data$cam~pred1.vft[1:nsubj])
+roc3.vft = roc(vft.comb_data$cam~pred.vft.demo[1:nsubj])
+
+plot(roc1.vft,main = paste("ROC curve (VFT)"),col = 1)
+#ci(roc(vft.comb_data$cam~pred.vft.brain[1:nsubj]),
+#     main = paste("ROC curve (VFT)"),col = 1)
+
+#plot(ci.se(roc1))
+lines(roc2.vft,col = 2)
+lines(roc3.vft,col = 3)
+
+auc1 = round(auc(roc1.vft),3); ci1.vft = round(as.numeric(ci(roc1.vft)),3)
+auc2 = round(auc(roc2.vft),3); ci2.vft = round(as.numeric(ci(roc2.vft)),3)
+auc3 = round(auc(roc3.vft),3); ci3.vft = round(as.numeric(ci(roc3.vft)),3)
+
+legend("bottomright",legend = c(paste0("Demographic and brain info, AUC = ", auc2,', CI (', ci2.vft[1],',',ci2.vft[3],')'), paste0("Brain info only, AUC = ", auc1,', CI (', ci1.vft[1],',',ci1.vft[3],')'), 
+                                paste0("Demographic info only, AUC = ", auc3,', CI (', ci3.vft[1],',',ci3.vft[3],')')), col = c(2,1,3),pch = "-",cex=0.7)
+
+
+```
+

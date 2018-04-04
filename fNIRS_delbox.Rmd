@@ -1,0 +1,660 @@
+---
+title: "fNIRS_delbox"
+author: "Guoqing Wang"
+output: html_document
+---
+
+
+```{r load data with intergral analysis}
+library(stringr)
+library(readr)
+library(zoo)
+library(plotly)
+dir_del = "../../fNIRS/processed12_18_2015/Delbox/Hb Delbox (10001-10055) FC0 pre5sec task40sec trial2-3"
+files = list.files(dir_del, pattern = "Oxy.csv$")
+subjects = as.numeric(str_extract(files, "[0-9]+"))-10000
+nchannels = 52
+nsubj = length(subjects)
+t_course = 1:451
+for(i in 1:nsubj){
+  if(i == 1){
+    temp = read.csv(file = paste0(dir_del,"/",files[i]),skip = 40)
+    delbox = t(as.matrix(temp[t_course,-c(1,54:58)]))
+  }else{
+    temp = read.csv(file = paste0(dir_del,"/",files[i]),skip = 40)
+    delbox = rbind(delbox, t(as.matrix(temp[t_course,-c(1,54:58)])))
+  }
+}
+
+save(delbox,file = "raw_delbox.rdata")
+```
+
+```{r}
+library(zoo)
+nsubj = 53
+nchannels = 52
+load("raw_delbox.rdata")
+
+
+wid = 50
+roll.var = rowMeans(t(rollapply(t(delbox),width = wid,sd)))
+
+hist(roll.var,breaks = seq(0,1.5,by =1e-4))
+
+threshold =0.05
+length(which(roll.var>threshold)) #52 channels are removed
+
+roll.var.mat = delbox.reshape(roll.var,53,52)
+dim(roll.var.mat)
+
+ind_large = which(abs(roll.var.mat)>threshold,arr.ind = T) #[subj, channel]
+```
+
+
+```{r Show large index}
+library(ggplot2)
+library(reshape2)
+#reshape into a matrix
+
+jet.colors <-
+  colorRampPalette(c("#00007F", "blue", "#007FFF", "cyan",
+                     "#7FFF7F", "yellow", "#FF7F00", "red", "#7F0000"))
+
+data_plot = as.data.frame(roll.var.mat)
+rownames(roll.var.mat) = 1:53
+colnames(roll.var.mat) = 1:52
+
+roll.temp = melt(roll.var.mat)
+roll.temp$Subjects = roll.temp$Var1
+roll.temp$Channels = roll.temp$Var2
+roll.temp$RunningSD= roll.temp$value
+ggplot(data = roll.temp) + geom_tile(aes(x=Subjects, y=Channels, fill=RunningSD))+scale_fill_gradientn(colours = jet.colors(10))+theme_bw()+scale_x_continuous(breaks = seq(0,50,by=5))
+
+```
+
+
+
+```{r compute the unbalanced design}
+rejection_matrix = matrix(1,nrow = nsubj,ncol = nchannels)
+rejection_matrix[ind_large]=0 #0 means reject
+rejection_list = as.vector(t(rejection_matrix))
+
+tn = dim(delbox)[2]
+
+delbox1 = delbox[rejection_list==1,]
+num_channel = rowSums(rejection_matrix) #number of channels in each subjects
+cum_channel_number = cumsum(num_channel)
+
+#calculate the grand mu
+
+    mu_subj = matrix(nrow = nsubj,ncol = tn)
+    for (i in 1:nsubj){
+      mu_subj[i,] = colMeans(delbox1[(cum_channel_number[i]-num_channel[i]+1):cum_channel_number[i],])
+    }
+    mu = colMeans(mu_subj)
+    par(mfrow = c(1,1))
+    plot((1:tn)/10,mu,type = "l", xlab = "time(sec)", main = "SAT overall mean")
+    
+    delbox2 = delbox
+    delbox2[rejection_list==0,] = rep(0,tn)
+# calculate the channel specific mean
+    eta = matrix(0,nchannels,tn)
+    for (j in 1:nchannels){
+      eta[j,] = colSums(delbox2[(0:(nsubj-1)*nchannels) + j, ])/num_channel[j] - mu
+    }
+    ngrid= 5
+    par(mfrow=c(ngrid,ngrid))
+    for(k in 1:(ngrid^2))
+    plot(eta[k,],type = "l", ylab = "eta", xlab = "", main = paste("eta", k))
+
+
+# calculate the resid
+      resid.temp = matrix(0,nrow = nsubj*nchannels,ncol=tn)
+      for(j in 1:nchannels){
+          resid.temp[(0:(nsubj-1)*nchannels) + j,] = t(t(delbox[ (0:(nsubj-1)*nchannels)+j,])-eta[j,]-mu)
+      }
+      resid = resid.temp[rejection_list==1,] #remove rejected channels
+
+###     Estimate the three covariance functions: overall covariance G, 
+###     between covariance Gb and within covariance Gw
+      library(Matrix)
+    Gb <- matrix(0, tn, tn)
+    
+    G = G.temp = matrix(0, tn, tn)
+    for (m in 1: nsubj){
+      G.temp = matrix(0, tn, tn)
+         for (k in 1: num_channel[m]){
+          G.temp = G.temp+tcrossprod(resid[cum_channel_number[m]-num_channel[m]+k,])
+         }
+       G = G+G.temp/num_channel[m]       
+    }
+    G = G/nsubj
+    
+    index.pair = vector("list",nsubj)
+    cur.index = rep(1,nsubj)
+  for(i in 1:nsubj){
+    index.pair[[i]] = matrix(0,num_channel[i]*(num_channel[i]-1)/2,2)
+    for (k in 1:(num_channel[i]-1)){
+      for(l in (k+1):num_channel[i]){
+        index.pair[[i]][cur.index[i],] = c(k,l)
+        cur.index[i] = cur.index[i]+1
+      }
+    }
+  }
+    Gw = Gw.temp =  matrix(0, tn, tn)
+    for (m in 1: nsubj){
+      Gw.temp = matrix(0, tn, tn)
+        Npairs.temp = num_channel[m]*(num_channel[m]-1)/2
+         for (k in 1: Npairs.temp){
+           resid.pair.temp = resid[index.pair[[m]][k,1]+cum_channel_number[m]-num_channel[m],]
+                            -resid[index.pair[[m]][k,2]+cum_channel_number[m]-num_channel[m],]
+           Gw.temp = Gw.temp+tcrossprod(resid.pair.temp)
+         }
+       Gw = Gw + Gw.temp/Npairs.temp      
+    }
+    Gw = Gw/nsubj
+    
+    Gb = G - Gw 
+
+e1 = eigen(Gb)
+e2 = eigen(Gw)
+
+# output the eigenvalues
+
+    N = tn
+    tlength = 1
+    
+fpca1.value <- e1$values* tlength / N
+fpca2.value <- e2$values* tlength / N
+
+
+    
+#     Keep only non-negative eigenvalues
+    fpca1.value <- ifelse(fpca1.value>=0, fpca1.value, 0)
+    fpca2.value <- ifelse(fpca2.value>=0, fpca2.value, 0)
+###     Calculate the percentage of variance that are explained by the components
+
+    percent1 <- (fpca1.value)/sum(fpca1.value)
+    percent2 <- (fpca2.value)/sum(fpca2.value)
+    
+
+    ###     Decide the number of components that are kept at level 1 and 2. The general
+###     rule is to stop at the component where the cumulative percentage of variance 
+###     explained is greater than 90% and the variance explained by any single component
+###     after is less than 1/N. The number of components are also no less than the 
+###     pre-determined minimum values min.K1 or min.K2.
+    min.K1 = 4
+    min.K2 = 4
+    K1 <- max( which(cumsum(percent1) < 0.9 | percent1 > 1/tn ) + 1, min.K1 )
+    K2 <- max( which(cumsum(percent2) < 0.9 | percent2 > 1/tn ) + 1, min.K2 )
+
+###     estimate eigen vectors for discretized covariance matrices and
+###     transform them into norm one eigenfunctions
+    fpca1.vectors <- e1$vectors[, 1:K1]*sqrt(N/tlength)
+    fpca2.vectors <- e2$vectors[, 1:K2]*sqrt(N/tlength)
+    
+###     The eigenfunctions are unique only up to a change of signs.
+###     Select the signs of eigenfunctions so that the integration over the domain 
+###     is non-negative
+    
+        for(i in 1:K1) {
+        v2 <- fpca1.vectors[,i]
+        tempsign <- sum(v2)
+        fpca1.vectors[,i] <- ifelse(tempsign<0, -1,1) * v2
+        }
+        for(i in 1:K2) {
+            v2 <- fpca2.vectors[,i]
+            tempsign <- sum(v2)
+            fpca2.vectors[,i] <- ifelse(tempsign<0, -1,1) * v2
+        }
+
+    par(mfrow = c(2,3))
+        for(i in 1:3){
+          plot((1:tn)/10,fpca1.vectors[,i], main = paste0("L1 eigenfunc",i, " ",round(percent1[i]*100,2),"%"),ylab="",xlab="time (sec)",type = 'l')
+        }
+        
+        for(i in 1:3){
+          plot((1:tn)/10,fpca2.vectors[,i], main = paste0("L2 eigenfunc",i," ",round(percent2[i]*100,2),"%"),ylab="",xlab="time (sec)",type = 'l')
+        }    
+
+###     First, calculate the inner product (the cosine of the angles) between 
+###     level 1 eigenfunctions and level 2 eigenfunctions
+    cross.integral = t(fpca1.vectors)%*%fpca2.vectors*tlength/N
+###     Next, calculate the inner product of each centered function with the 
+###     level 1 or level 2 eigenfunctions
+    
+    resid.temp2 = resid.temp
+    resid.temp2[rejection_list==0,] = rep(0,tn)
+    
+###     Next, calculate the inner product of each centered function with the 
+###     level 1 or level 2 eigenfunctions
+    M= nsubj; J = nchannels
+
+    int1 <- matrix(0, M*J, K1)
+    int2 <- matrix(0, M*J, K2)
+    for(i in 1:(M*J))   {
+        for(j in 1:K1)  {
+            int1[ i ,j] <- sum( resid.temp2[i,] * fpca1.vectors[,j] ) * tlength /N
+        }
+        for(j in 1:K2) {
+            int2[ i ,j] <- sum( resid.temp2[i,] * fpca2.vectors[,j] ) * tlength /N    
+        }
+    }
+
+    
+###     Finally, calculate the principal component scores based on the formulas
+###     given in the paper.
+        s1 <- matrix(NA, nsubj*nchannels, K1)
+        s2 <- matrix(NA, nsubj*nchannels, K2)
+        library(MASS)
+        design.xi <- ginv( diag(rep(1,K1)) - cross.integral %*% t(cross.integral) )
+        for(m in 1:nsubj) {
+            resd <- rep(0, K1)
+            for(j in 1:J) {
+                index <- (m-1) * J + j
+                resd <- resd + ( int1[index,] - drop(cross.integral %*% int2[index,]) )/num_channel[m]
+            }
+            index.m <- ( (m-1) * J + 1 ) : (m*J)
+            xi.temp <- design.xi %*% resd
+            s1[index.m,] <- matrix(rep(xi.temp, each=J), nrow=J)
+            s2[index.m,] = t(t(int2[index.m,]) - drop( t(cross.integral) %*% xi.temp ))
+        }
+        
+        s1.reshape = array(NA, c(nsubj,nchannels,K1))
+        s2.reshape = array(NA, c(nsubj,nchannels,K2))
+        for(i in 1:K2) {
+          s.temp = delbox.reshape(s2[,i],nsubj = nsubj, nchannels = nchannels)
+          s.temp[ind_large]=NA;
+          s2.reshape[,,i]=s.temp
+        }
+        s1.reshape1 = matrix(nrow = nsubj,ncol = K1)
+        for(i in 1:K1){ 
+          s1.reshape[,,i] = delbox.reshape(s1[,i],nsubj = nsubj,nchannels = nchannels)
+          s1.reshape1[,i] = s1.reshape[,1,i]
+          }
+        
+        
+        
+            
+            par(mfrow = c(1,1))
+            k.level = 2
+        plot(s1[rejection_list==1,k.level],s2[rejection_list==1,k.level])            
+            
+        
+        rho = sum(fpca1.value)/(sum(fpca1.value)+sum(fpca2.value))
+
+        delbox.results=list(K1=K1,K2=K2,lambda1=fpca1.value,lambda2=fpca2.value,
+                            phi1=fpca1.vectors,phi2=fpca2.vectors,
+                            rho = rho,scores1=s1.reshape1,
+                            scores2=s2.reshape,mu=mu,eta=t(eta),
+                            reject.index=ind_large) 
+```
+
+```{r}
+        save(delbox.results,file="delbox_result.rdata")
+        delbox.subj.scores = delbox.results$scores1
+        colnames(delbox.subj.scores) = paste0("Comp",1:9)
+        save(delbox.subj.scores,file ="delbox_subj_scores.rdata")
+```
+
+```{r plot eigenfunctions}
+
+library(xtable)
+klevel = K1
+results.table = data.frame(phi1 = fpca1.value[1:klevel], phi2=fpca2.value[1:klevel])
+results.table10000 = data.frame(phi1 = fpca1.value[1:klevel]*1e4, phi2=fpca2.value[1:klevel]*1e4)
+xtable(results.table10000)
+
+totalvaribility = sum(fpca1.value+fpca2.value)
+cumu.table = results.table/totalvaribility
+cumu.table$cumulative = cumsum(cumu.table$phi1+cumu.table$phi2)
+cumu.table[klevel+1,] = apply(cumu.table,2,sum)
+xtable(cumu.table)
+
+dat.result = loadRData('delbox_result.rdata')
+
+
+par(mfrow = c(1,1), cex=0.7)
+plot(1:451/10,dat.result$mu,type = "l",ylim = c(-0.025,0.025),xlab = "time (sec)", ylab = "", main="SAT mean oxy-Hb")
+for(i in 1:5){
+lines(1:451/10, dat.result$eta[,i]+dat.result$mu,col = i+1)
+}
+legend("bottomleft", legend = c("ovealll", paste("channel",1:5)), 
+       col = 1:6, pch = 20)
+
+# plotdat = data.frame(overall = dat.result$mu) 
+# plotdat$time = 1:451/10
+# plotdat$channel1 = dat.result$eta[,1]+plotdat$overall
+# plotdat$channel2 = dat.result$eta[,2]+plotdat$overall
+# plotdat$channel3 = dat.result$eta[,3]+plotdat$overall
+# plotdat$channel4 = dat.result$eta[,4]+plotdat$overall
+# ggplot(plotdat,aes(x = time))+geom_line(aes(y=overall,colour = 1)) + geom_line(aes(y=channel1,colour = 2))
+
+
+```
+
+
+```{r load deomgraphic info}
+install.packages(c("mice","readxl","glmnet"))
+require(mice)
+require(readxl)
+loadRData <- function(fileName){
+#loads an RData file, and returns it
+    load(fileName)
+    get(ls()[ls() != "fileName"])
+}
+dat.result = loadRData('delbox_result.rdata')
+
+missing21 = dat.result$scores2[,,1]
+missing22 = dat.result$scores2[,,2]
+
+score21.imputed = mice(data=t(missing21),m = 5, method = "pmm", maxit = 20, seed = 500)
+score22.imputed = mice(data=t(missing22),m = 5, method = "pmm", maxit = 20, seed = 500)
+
+names = names1 = names2 = 1:52
+
+for(i in 1:length(names1)){
+  names1[i] = paste0("C",names[i],"_1")
+  names2[i] = paste0("C",names[i],"_2")
+}
+s21.impute = t(complete(score21.imputed))
+colnames(s21.impute) = names1
+s22.impute = t(complete(score22.imputed))
+colnames(s22.impute) = names2
+
+
+corr21 = cor(s21.impute)
+image(corr21, axes = F)
+
+dim(dat.result$scores1)
+s1.level1 = dat.result$scores1[,1]
+s1.level2 = dat.result$scores1[,2]
+
+path = "/Users/guoqingwang/Google Drive/ProjectWithMartin/fNIRS/fNIRs/demog12_18_15/Data book for Hepatic disease study (10001-10055).xlsx"
+data_id = read_excel(path, sheet = 1,skip = 2)
+data_MH = read_excel(path, sheet = 2)
+data_ADL = read_excel(path, sheet = 3)
+data_CCI = read_excel(path, sheet = 4)
+data_lab = read_excel(path, sheet = 5)
+data_MMSE = read_excel(path, sheet = 6,skip = 1)
+data_CAM = read_excel(path, sheet = 7)
+data_DRS98 = read_excel(path, sheet = 9)
+
+demog.data = list(id = data_id, MH = data_MH, ADL = data_ADL, CCI = data_CCI, lab = data_lab,
+                  MMSE = data_MMSE, CAM = data_CAM, DRS98 = data_DRS98)
+save(demog.data,file = "demographicData.rdata")
+
+combined_data = data.frame(cam = ifelse(data_id[,24]=="positive",yes = 1,no = 0),
+                           gender = ifelse(data_id[,6]=="M",yes = 1, no = 0),
+                           age = data_id[,7],
+                           YoE = data_MH[,5],
+                           meld = data_lab[,21], 
+                           cci = as.vector(t(data_CCI[21,3:57])), 
+                           inr = data_lab[,20],
+                           dsr = data_id[,25],
+                           sat = data_id[,23],
+                           vft = data_id[,12])
+colnames(combined_data) = c("cam","gender","age","YoE","meld","cci","inr","dsr","sat","vft")
+combined_data = combined_data[-c(33,51),] #remove empty subjects delbox
+
+#combined_data = combined_data[-c(51),] #remove empty subjects VFT
+comb_data = cbind(combined_data,s1.level1,s1.level2,s21.impute,s22.impute)
+#save(comb_data,file = "delbox_scores_demog.rdata")
+```
+
+```{r plots and regression SVM}
+comb_data = loadRData("delbox_scores_demog.rdata")
+
+comb_data$cam = as.factor(comb_data$cam)
+comb_data$gender = as.numeric(comb_data$gender)
+
+delbox.score.data.combined = cbind(combined_data,s.level1,s21.impute,s22.impute)
+library(ggplot2)
+library(ggpubr)
+s1_age = ggplot(data = comb_data,aes(age,s1.level1))+geom_point()+geom_smooth()+labs(title = 'score 1 vs. age')+theme(axis.title.x=element_blank(),axis.title.y = element_blank(),plot.title = element_text(hjust = 0.5))
+s1_sat = ggplot(data = comb_data,aes(sat,s1.level1))+geom_point()+geom_smooth()+labs(title = 'score 1 vs. SAT')+theme(axis.title.x=element_blank(),axis.title.y = element_blank(),plot.title = element_text(hjust = 0.5))
+s1_cam = ggplot(data = comb_data,aes(factor(cam),s1.level1))+geom_boxplot()+labs(title = 'score 1 vs. CAM')+theme(axis.title.x=element_blank(),axis.title.y = element_blank(),plot.title = element_text(hjust = 0.5))
+cam_gender = ggplot(data = comb_data,aes(x=factor(cam),fill=factor(gender)))+geom_bar()+labs(title = 'CAM vs. age')+theme(axis.title.x=element_blank(),axis.title.y = element_blank(),plot.title = element_text(hjust = 0.5))
+s1_yoe = ggplot(data = comb_data,aes(factor(YoE),s1.level1))+geom_boxplot() +labs(title = 'score 1 vs. age')+theme(axis.title.x=element_blank(),axis.title.y = element_blank(),plot.title = element_text(hjust = 0.5))
+s1_gender = ggplot(data = comb_data,aes(factor(gender),s1.level1))+geom_boxplot()+labs(title = 'score 1 vs. gender')+theme(axis.title.x=element_blank(),axis.title.y = element_blank(),plot.title = element_text(hjust = 0.5))
+
+s1_DSR = ggplot(data = comb_data,aes(dsr,s1.level1))+geom_point()+geom_smooth()+labs(title = 'score 1 vs. DSR')+theme(axis.title.x=element_blank(),axis.title.y = element_blank(),plot.title = element_text(hjust = 0.5))
+
+s1_VFT = ggplot(data = comb_data,aes(vft,s1.level1))+geom_point()+geom_smooth()+labs(title = 'score 1 vs. VFT')+theme(axis.title.x=element_blank(),axis.title.y = element_blank(),plot.title = element_text(hjust = 0.5))
+
+s1_s2 = ggplot(data = comb_data,aes(s1.level2,s1.level1))+geom_point()+labs(title = 'score 1 vs. score 2')+theme(axis.title.x=element_blank(),axis.title.y = element_blank(),plot.title = element_text(hjust = 0.5))
+
+s1_meld = ggplot(data = comb_data,aes(meld,s1.level1))+geom_point()+geom_smooth()+labs(title = 'score 1 vs. MELD')+theme(axis.title.x=element_blank(),axis.title.y = element_blank(),plot.title = element_text(hjust = 0.5))
+
+s1_cci = ggplot(data = comb_data,aes(cci,s1.level1))+geom_point()+geom_smooth()+labs(title = 'score 1 vs. CCI')+theme(axis.title.x=element_blank(),axis.title.y = element_blank(),plot.title = element_text(hjust = 0.5))
+s1_inr = ggplot(data = comb_data,aes(inr,s1.level1))+geom_point()+geom_smooth()+labs(title = 'score 1 vs. INR')+theme(axis.title.x=element_blank(),axis.title.y = element_blank(),plot.title = element_text(hjust = 0.5))
+
+ggarrange(s1_s2, s1_cam, s1_gender, s1_age, s1_sat, s1_VFT, s1_meld, s1_cci, s1_inr,ncol = 3, nrow = 3)
+
+# apply svm 
+
+library(e1071)
+set.seed(1)
+comb_data = loadRData("delbox_scores_demog.rdata")
+comb_data$cam = as.factor(comb_data$cam)
+comb_data$gender = as.numeric(comb_data$gender)
+inputData = data.frame(gender = comb_data$gender,scale(comb_data[,-c(1,2)]))
+
+svm_tune = tune(svm, train.x = inputData, train.y = comb_data$cam,kernel="linear", ranges=list(epsilon = seq(0,1,0.1), cost = 2^(2:9)))
+svm_tune$best.parameters
+summary(svm_tune)
+svmfit1 = svm_tune$best.model
+pred <- predict(svmfit1,inputData)
+table(pred,comb_data$cam)
+
+weigths = t(svmfit1$coefs) %*% svmfit1$SV
+
+comb_data$cam = as.factor(comb_data$cam)
+comb_data$gender = as.numeric(comb_data$gender)-1
+inputData.Brain = data.frame(scale(comb_data[,-c(1:10)]))
+
+svm_tune = tune(svm, train.x = inputData.Brain, train.y = comb_data$cam,kernel="linear", ranges=list(epsilon = seq(0,1,0.1), cost = 2^(2:9)),decision.values=T)
+svmfit1.brain = svm_tune$best.model
+
+pred <- predict(svmfit1.brain,inputData.Brain)
+fitted=attributes(predict(svmfit1.brain,inputData.Brain,decision.values=TRUE))$decision.values
+
+table(pred,true=comb_data$cam)
+weigths.Brain = t(svmfit1.brain$coefs) %*% svmfit1.brain$SV
+svm_tune$best.parameters
+
+write.csv(x = weigths.Brain[3:54],file = "delbox_brain_1.csv")
+write.csv(x = weigths.Brain[55:106],file = "delbox_brain_2.csv")
+write.csv(x = weigths[9+3:54],file = "delbox_overall_1.csv")
+write.csv(x = weigths[9+55:106],file = "delbox_overall_2.csv")
+
+
+
+set.seed(1)
+# Brain info only
+variable2 = 2:10
+variables1 = 1
+variables = 1:10# 1:10 means brain only, 1 means including demographic info
+nsubj = 53
+pred.delbox.brain = 1:nsubj
+pred.delbox.demo = 1:nsubj
+pred.delbox = 1:nsubj
+for(i in 1:nsubj){
+  test = comb_data[i,]
+  train = comb_data[-i,]
+  fitBrainCV = svm(x = train[,-variables], y = train$cam, kernel="linear",epsilon = 0,cost = 4,probability = T)
+  temp = predict(fitBrainCV,test[,-variables], probability = TRUE)
+  pred.delbox.brain[i] = attr(temp, "probabilities")[,2]
+  fitsvm = svm(x = train[,-variables1], y = train$cam, kernel="linear",epsilon = 0,cost = 4,probability = T)
+  temp1 = predict(fitsvm,test[,-variables1],decision.values =TRUE,probability = TRUE)
+  pred.delbox[i] = attr(temp1, "probabilities")[,2]
+  fitsvm.demo = svm(x = train[,variable2], y = train$cam, kernel="linear",epsilon = 0,cost = 4,probability = T)
+  temp2 = predict(fitsvm.demo,test[,variable2], decision.values =TRUE,probability = TRUE)
+  pred.delbox.demo[i] = attr(temp2, "probabilities")[,2]
+}
+library(pROC)
+par(mfrow = c(1,1))
+roc1.delbox = roc(comb_data$cam~pred.delbox.brain[1:nsubj])
+roc2.delbox = roc(comb_data$cam~pred.delbox[1:nsubj])
+roc3.delbox = roc(comb_data$cam~pred.delbox.demo[1:nsubj])
+
+
+plot(roc1.delbox,main = paste("ROC curve (SAT SVM)"))
+lines(roc2.delbox,col = 2)
+lines(roc3.delbox,col = 3)
+
+auc1 = round(auc(roc1.delbox),3);ci1.delbox = round(as.numeric(ci(roc1.delbox)),3)
+auc2 = round(auc(roc2.delbox),3);ci2.delbox = round(as.numeric(ci(roc2.delbox)),3)
+auc3 = round(auc(roc3.delbox),3);ci3.delbox = round(as.numeric(ci(roc3.delbox)),3)
+#legend("bottomright",legend = c(paste("Brain info only, AUC = ", auc1), paste("Demographic and brain info, AUC = ", auc2)), col = c(1,2),pch = "-",cex=0.7)
+
+legend("bottomright",legend = c(paste("Brain info only, AUC = ", auc1,'CI (', ci1.delbox[1],',',ci1.delbox[3],')'), 
+                                paste("Demographic and brain info, AUC = ", auc2,'CI (', ci2.delbox[1],',',ci2.delbox[3],')'),
+                                paste("Demographic info only, AUC = ", auc3,'CI (', ci3.delbox[1],',',ci3.delbox[3],')')), 
+       col = c(1,2,3),pch = "-",cex=0.7)
+
+####### remove the Level 1 scores
+
+variable2 = 2:10
+variables1 = c(1,11,12)
+variables = c(1:12,65:116)# 1:10 means brain only, 1 means including demographic info
+nsubj = 53
+pred.delbox.brain = 1:nsubj
+pred.delbox.demo = 1:nsubj
+pred.delbox = 1:nsubj
+for(i in 1:nsubj){
+  test = comb_data[i,]
+  train = comb_data[-i,]
+  fitBrainCV = svm(x = train[,-variables], y = train$cam, kernel="linear",epsilon = 0,cost = 4,probability = T)
+  temp = predict(fitBrainCV,test[,-variables], decision.values =TRUE, probability = TRUE)
+  pred.delbox.brain[i] = attr(temp, "probabilities")[,2]
+  fitsvm = svm(x = train[,-variables1], y = train$cam, kernel="linear",epsilon = 0,cost = 4,probability = T)
+  temp1 = predict(fitsvm,test[,-variables1],decision.values =TRUE,probability = TRUE)
+  pred.delbox[i] = attr(temp1, "probabilities")[,2]
+  fitsvm.demo = svm(x = train[,variable2], y = train$cam, kernel="linear",epsilon = 0,cost = 4,probability = T)
+  temp2 = predict(fitsvm.demo,test[,variable2], decision.values =TRUE,probability = TRUE)
+  pred.delbox.demo[i] = attr(temp2, "probabilities")[,2]
+}
+
+
+library(pROC)
+par(mfrow = c(1,1))
+plot(roc(comb_data$cam~pred.delbox.brain[1:nsubj]),
+     main = paste("ROC curve (SAT SVM)"))
+lines(roc(comb_data$cam~pred.delbox[1:nsubj]),col = 2)
+lines(roc(comb_data$cam~pred.delbox.demo[1:nsubj]),col = 3)
+
+auc1 = round(auc(roc(comb_data$cam~pred.delbox.brain[1:nsubj])),3)
+auc2 = round(auc(roc(comb_data$cam~pred.delbox[1:nsubj])),3)
+auc3 = round(auc(roc(comb_data$cam~pred.delbox.demo[1:nsubj])),3)
+legend("bottomright",legend = c(paste("Brain info only, AUC = ", auc1), paste("Demographic and brain info, AUC = ", auc2)), col = c(1,2),pch = "-",cex=0.7)
+
+```
+
+
+```{r tests}
+#### USE ROCR package
+library(ROCR)
+rocperf=function(pred, truth, ...){
+  predob = prediction (pred, truth)
+  perf = performance (predob , "tpr", "fpr") 
+  return(perf)
+  }
+
+variables = 1:10# 1:10 means brain only, 1 means including demographic info
+nsubj = 53
+fitted.delbox.brain = 1:nsubj
+fitted.delbox.all = 1:nsubj
+for(i in 1:nsubj){
+  test = comb_data[i,]
+  train = comb_data[-i,]
+  fitBrainCV = svm(x = train[,-variables], y = train$cam, kernel="radial",epsilon = 0,cost = 4,probability = T)
+    fitsvm = svm(x = train[,-variables1], y = train$cam, kernel="radial",epsilon = 0,cost = 4,probability = T)
+  temp = predict(fitBrainCV,test[,-variables], decision.values =TRUE, probability = TRUE)
+  temp.all=predict(fitsvm,test[,-variables1], decision.values =TRUE, probability = TRUE)
+  fitted.delbox.brain[i] = attributes(temp)$decision.values
+  fitted.delbox.all[i] = attributes(temp.all)$decision.values
+}
+
+rocplot(fitted.delbox.brain, comb_data$cam,col = 1)
+rocplot(fitted.delbox.all, comb_data$cam, add = T, col = 2)
+performance(prediction(fitted.delbox.brain, comb_data$cam),'auc')@"y.values" #0.57
+performance(prediction(fitted.delbox.all, comb_data$cam),'auc')@"y.values"#0.75
+# random frorest trial
+
+library(randomForest)
+rftune = tuneRF(x = inputData, y = comb_data$cam,stepFactor = 1.5, improve = 1e-5, ntreeTry = 500)
+
+
+fitrf = randomForest(x = inputData, y = comb_data$cam, mtry = 22)
+cl.rf = predict(fitrf, inputData, type = "class")
+pr.rf = predict(fitrf, inputData, type = "prob")[,2]
+table(pred = cl.rf, true = comb_data$cam)
+
+set.seed(2017)
+variables = 1:10# 1:10 means brain only, 1 means including demographic info
+nsubj = 53
+pred = 1:nsubj
+for(i in 1:nsubj){
+  test = comb_data[i,]
+  train = comb_data[-i,]
+  fitrf = randomForest(x = train[,-variables], y = train$cam, mtry=22)
+  pred[i] = predict(fitrf,test[,-variables], type = "prob")[,2]
+}
+variables1 = 1# 1:10 means brain only, 1 means including demographic info
+nsubj = 53
+pred1 = 1:nsubj
+for(i in 1:nsubj){
+  test = comb_data[i,]
+  train = comb_data[-i,]
+  fitrf = randomForest(x = train[,-variables1], y = train$cam, mtry=22)
+  pred1[i] = predict(fitrf,test[,-variables1], type = "prob")[,2]
+}
+variables2 = 2:10# 1:10 means brain only, 1 means including demographic info
+nsubj = 53
+pred2 = 1:nsubj
+for(i in 1:nsubj){
+  test = comb_data[i,]
+  train = comb_data[-i,]
+  fitrf = randomForest(x = train[,variables2], y = train$cam, mtry=22)
+  pred2[i] = predict(fitrf,test[,variables2], type = "prob")[,2]
+}
+
+library(pROC)
+par(mfrow = c(1,1))
+plot(roc(comb_data$cam~pred[1:nsubj]),
+     main = paste("ROC curve"), col = 1)
+lines(roc(comb_data$cam~pred1[1:nsubj]),col = 2)
+lines(roc(comb_data$cam~pred2[1:nsubj]),col = 3)
+auc1 = round(auc(roc(comb_data$cam~pred[1:nsubj])),3)
+auc2 = round(auc(roc(comb_data$cam~pred1[1:nsubj])),3)
+auc3 = round(auc(roc(comb_data$cam~pred2[1:nsubj])),3)
+
+legend("bottomright",legend = c(paste("Demographic and brain info, AUC = ", auc2),paste("Brain info only, AUC = ", auc1)), col = c(2,1,3),pch = "-",cex=0.7)
+
+legend("bottomright",legend = c(paste("Demographic and brain info, AUC = ", auc2),paste("Brain info only, AUC = ", auc1),paste("Demographic info only, AUC = ", auc3)), col = c(2,1,3),pch = "-",cex=0.7)
+
+# variables = 1:10# 1:10 means brain only, 1 means including demographic info
+# nsubj = 53
+# pred = 1:nsubj
+# for(i in 1:nsubj){
+#   test = comb_data[i,]
+#   train = comb_data[-i,]
+#   fitBrainCV = svm(x = train[,-variables], y = train$cam, kernel="linear",epsilon = 0,cost = 4,probability = T)
+#   temp = predict(fitBrainCV,test[,-variables], decision.values =TRUE, probability = TRUE)
+#   pred[i] = attr(temp, "decision.values")
+# }
+# 
+# variables1 = 1# 1:10 means brain only, 1 means including demographic info
+# nsubj = 53
+# pred1 = 1:nsubj
+# for(i in 1:nsubj){
+#   test = comb_data[i,]
+#   train = comb_data[-i,]
+#   fitsvm = svm(x = train[,-variables1], y = train$cam, kernel="linear",epsilon = 0,cost = 4,probability = T)
+#   temp = predict(fitsvm,test[,-variables1],decision.values =TRUE,probability = TRUE)
+#   pred1[i] = attr(temp, "decision.values")
+# }
+# 
+# rocplot(pred1,comb_data$cam)
+```
