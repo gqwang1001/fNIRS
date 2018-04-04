@@ -288,7 +288,6 @@ fpca2.value <- e2$values* tlength / N
 ```
 
 ```{r plot eigenfunctions}
-
 library(xtable)
 klevel = K1
 results.table = data.frame(phi1 = fpca1.value[1:klevel], phi2=fpca2.value[1:klevel])
