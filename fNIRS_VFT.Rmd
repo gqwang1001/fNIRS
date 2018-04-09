@@ -1,8 +1,7 @@
 ---
 title: "fNIRS_VFT"
-output: html_document
+output: pdf_document
 ---
-
 
 ```{r load data}
 require(stringr)
