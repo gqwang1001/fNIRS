@@ -5,11 +5,17 @@ output: html_document
 ---
 
 
-```{r load data with intergral analysis}
+```{r load data}
 library(stringr)
 library(readr)
 library(zoo)
 library(plotly)
+library(ggplot2)
+library(reshape2)
+
+load("fnirs.reshape.R")
+
+# file folder directory
 dir_del = "../../fNIRS/processed12_18_2015/Delbox/Hb Delbox (10001-10055) FC0 pre5sec task40sec trial2-3"
 files = list.files(dir_del, pattern = "Oxy.csv$")
 subjects = as.numeric(str_extract(files, "[0-9]+"))-10000
@@ -26,16 +32,11 @@ for(i in 1:nsubj){
   }
 }
 
-#save(delbox,file = "raw_delbox.rdata")
 ```
 
-```{r}
-library(zoo)
+```{r detect noisy channels}
 nsubj = 53
 nchannels = 52
-load("raw_delbox.rdata")
-
-
 wid = 50
 roll.var = rowMeans(t(rollapply(t(delbox),width = wid,sd)))
 
@@ -44,18 +45,13 @@ hist(roll.var,breaks = seq(0,1.5,by =1e-4))
 threshold =0.05
 length(which(roll.var>threshold)) #52 channels are removed
 
-roll.var.mat = delbox.reshape(roll.var,53,52)
+roll.var.mat = fnirs.reshape(roll.var,53,52)
 dim(roll.var.mat)
 
 ind_large = which(abs(roll.var.mat)>threshold,arr.ind = T) #[subj, channel]
-```
 
 
-```{r Show large index}
-library(ggplot2)
-library(reshape2)
-#reshape into a matrix
-
+# visulize location of noisy channels
 jet.colors <-
   colorRampPalette(c("#00007F", "blue", "#007FFF", "cyan",
                      "#7FFF7F", "yellow", "#FF7F00", "red", "#7F0000"))
@@ -69,12 +65,12 @@ roll.temp$Subjects = roll.temp$Var1
 roll.temp$Channels = roll.temp$Var2
 roll.temp$RunningSD= roll.temp$value
 ggplot(data = roll.temp) + geom_tile(aes(x=Subjects, y=Channels, fill=RunningSD))+scale_fill_gradientn(colours = jet.colors(10))+theme_bw()+scale_x_continuous(breaks = seq(0,50,by=5))
-
 ```
 
 
 
-```{r compute the unbalanced design}
+```{r  main MFPCA}
+# create a rejection matrix to indicate which channels are excluded in the rest analysis. 
 rejection_matrix = matrix(1,nrow = nsubj,ncol = nchannels)
 rejection_matrix[ind_large]=0 #0 means reject
 rejection_list = as.vector(t(rejection_matrix))
@@ -263,22 +259,22 @@ fpca2.value <- e2$values* tlength / N
         s1.reshape = array(NA, c(nsubj,nchannels,K1))
         s2.reshape = array(NA, c(nsubj,nchannels,K2))
         for(i in 1:K2) {
-          s.temp = delbox.reshape(s2[,i],nsubj = nsubj, nchannels = nchannels)
+          s.temp = fnirs.reshape(s2[,i],nsubj = nsubj, nchannels = nchannels)
           s.temp[ind_large]=NA;
           s2.reshape[,,i]=s.temp
         }
         s1.reshape1 = matrix(nrow = nsubj,ncol = K1)
         for(i in 1:K1){ 
-          s1.reshape[,,i] = delbox.reshape(s1[,i],nsubj = nsubj,nchannels = nchannels)
+          s1.reshape[,,i] = fnirs.reshape(s1[,i],nsubj = nsubj,nchannels = nchannels)
           s1.reshape1[,i] = s1.reshape[,1,i]
           }
         
         
         
             
-            par(mfrow = c(1,1))
-            k.level = 2
-        plot(s1[rejection_list==1,k.level],s2[rejection_list==1,k.level])            
+        #     par(mfrow = c(1,1))
+        #     k.level = 2
+        # plot(s1[rejection_list==1,k.level],s2[rejection_list==1,k.level])            
             
         
         rho = sum(fpca1.value)/(sum(fpca1.value)+sum(fpca2.value))

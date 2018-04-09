@@ -4,7 +4,7 @@ output: html_document
 ---
 
 
-```{r load data with intergral analysis}
+```{r load data}
 require(stringr)
 require(readr)
 require(R.matlab)
@@ -13,39 +13,38 @@ require(pheatmap)
 require(zoo)
 require(plotly)
 require(ggplot2)
+load("fnirs.reshape.R")
+# file folder directory
+dir_vft = "../../fNIRS/processed12_18_2015/VFT/Hb VFT all_Data"
+files = list.files(dir_vft, pattern = "Oxy.csv$")
+subjects = as.numeric(str_extract(files, "[0-9]+"))-10000
+nchannels = 52
+nsubj = length(subjects)
+t_course = 1:1251
+for(i in 1:nsubj){
+  if(i == 1){
+    temp = read.csv(file = paste0(dir_vft,"/",files[i]),skip = 40)
+    vft_dat = t(as.matrix(temp[t_course,-c(1,54:58)]))
+  }else{
+    temp = read.csv(file = paste0(dir_vft,"/",files[i]),skip = 40)
+    vft_dat = rbind(vft_dat, t(as.matrix(temp[t_course,-c(1,54:58)])))
+  }
+}
 
-vft_dat = read.csv("/Users/guoqingwang/Google Drive/ProjectWithMartin/fNIRS/fNIRs/processed12_18_2015/VFT/HbVFTall_modified/vft_oxy.csv",header = F)
+```
 
-wid = 50
+```{r detect noisy channels}
+wid = 50 #window width
 roll.var = rowMeans(t(rollapply(t(vft_dat),width = wid,sd)))
 
 hist(roll.var,breaks = seq(0,3,by =1e-4))
 threshold =0.05
 length(which(roll.var>threshold))
-
-nchannels = 52
-nsubj = dim(vft_dat)[1]/nchannels
-
-roll.var.mat = delbox.reshape(roll.var,nsubj,nchannels = nchannels)
+roll.var.mat = fnirs.reshape(roll.var,nsubj,nchannels = nchannels)
 ind_large = which(abs(roll.var.mat)>threshold,arr.ind = T)
-```
 
 
-```{r prepare for MFPCA}
-require(reshape2)
-
-#reshape into a matrix
-delbox.reshape = function(delbox_intg,nsubj,nchannels){
-  delbox_intg_reshape = matrix(NA,nrow = nsubj,ncol = nchannels)
-  for(i in 1:nsubj){
-    for (j in 1:nchannels){
-      delbox_intg_reshape[i,j] = delbox_intg[(i-1)*nchannels+j]
-    }
-  }
-  return(delbox_intg_reshape)
-}
-#writeMat("Delbox.mat",A=delbox_intg_reshape)
-
+# visulize noisy channels
 jet.colors <-
   colorRampPalette(c("#00007F", "blue", "#007FFF", "cyan",
                      "#7FFF7F", "yellow", "#FF7F00", "red", "#7F0000"))
@@ -63,7 +62,7 @@ ggplot(data = roll.temp) + geom_tile(aes(x=Subjects, y=Channels, fill=RunningSD)
 ```
 
 ```{r main MFPCA}
-
+# create a rejection matrix to indicate which channels are excluded in the rest analysis. 
 rejection_matrix = matrix(1,nrow = nsubj,ncol = nchannels)
 rejection_matrix[ind_large]=0 #0 means reject
 rejection_list = as.vector(t(rejection_matrix))
@@ -252,26 +251,26 @@ fpca2.value <- e2$values* tlength / N
         s1.reshape = array(NA, c(nsubj,nchannels,K1))
         s2.reshape = array(NA, c(nsubj,nchannels,K2))
         for(i in 1:K2) {
-          s.temp = delbox.reshape(s2[,i],nsubj = nsubj, nchannels = nchannels)
+          s.temp = fnirs.reshape(s2[,i],nsubj = nsubj, nchannels = nchannels)
           s.temp[ind_large]=NA;
           s2.reshape[,,i]=s.temp
         }
         s1.reshape1 = matrix(nrow = nsubj,ncol = K1)
         for(i in 1:K1){ 
-          s1.reshape[,,i] = delbox.reshape(s1[,i],nsubj = nsubj,nchannels = nchannels)
+          s1.reshape[,,i] = fnirs.reshape(s1[,i],nsubj = nsubj,nchannels = nchannels)
           s1.reshape1[,i] = s1.reshape[,1,i]
           }
         
-        plot(s1.reshape[,1,1],s1.reshape[,1,2])
-        
-        par(mfrow = c(4,4))
-        for(k in 1:16){
-            plot(s2.reshape[,k,1],s1.reshape[,1,1],ylab = "S.LEVEL1", xlab = paste("S.LEVEL2 FLIPPED Channel",k ))
-        }
-            
-            par(mfrow = c(1,1))
-            k.level = 2
-        plot(s1[rejection_list==1,k.level],s2[rejection_list==1,k.level])            
+        # plot(s1.reshape[,1,1],s1.reshape[,1,2])
+        # 
+        # par(mfrow = c(4,4))
+        # for(k in 1:16){
+        #     plot(s2.reshape[,k,1],s1.reshape[,1,1],ylab = "S.LEVEL1", xlab = paste("S.LEVEL2 FLIPPED Channel",k ))
+        # }
+        #     
+        #     par(mfrow = c(1,1))
+        #     k.level = 2
+        # plot(s1[rejection_list==1,k.level],s2[rejection_list==1,k.level])            
             
         
         rho = sum(fpca1.value)/(sum(fpca1.value)+sum(fpca2.value))
@@ -279,7 +278,9 @@ fpca2.value <- e2$values* tlength / N
         vft_dat.results=list(K1=K1,K2=K2,lambda1=fpca1.value,lambda2=fpca2.value,
                             phi1=fpca1.vectors,phi2=fpca2.vectors,rho = rho,scores1=s1.reshape1,
                             scores2=s2.reshape, mu=mu,eta=t(eta),reject.index=ind_large) 
+```
 
+```{r save data}
         save(vft_dat.results,file="vft_dat_result.rdata")
         
                 vft.subj.scores = vft_dat.results$scores1
