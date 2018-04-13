@@ -3,7 +3,6 @@ title: "fNIRS_delbox_analysis_of_scores"
 output: html_document
 ---
 ```{r load deomgraphic info}
-install.packages(c("mice","readxl","glmnet"))
 require(mice)
 require(readxl)
 loadRData <- function(fileName){
@@ -39,6 +38,8 @@ s1.level1 = dat.result$scores1[,1]
 s1.level2 = dat.result$scores1[,2]
 
 path = "/Users/guoqingwang/Google Drive/ProjectWithMartin/fNIRS/fNIRs/demog12_18_15/Data book for Hepatic disease study (10001-10055).xlsx"
+
+
 data_id = read_excel(path, sheet = 1,skip = 2)
 data_MH = read_excel(path, sheet = 2)
 data_ADL = read_excel(path, sheet = 3)
