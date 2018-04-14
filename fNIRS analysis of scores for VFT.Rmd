@@ -55,7 +55,7 @@ s2.l3.vft.imputed = t(complete(score23.vft.imputed))
 
 load("demographicInfo.rdata")
 vft.comb_data = cbind(demograph[-c(51),],s1.l1.vft,s1.l2.vft,s1.l3.vft,s2.l1.vft.imputed,s2.l2.vft.imputed,s2.l3.vft.imputed)
-vft.comb_data = vft.comb_data[-33,]
+vft.comb_data = vft.comb_data[-33,] # subject 33 has no SAT data, and is excluded from the rest of analysis
 
 save(file = "vft_score_demog.rdata",vft.comb_data)
 ```

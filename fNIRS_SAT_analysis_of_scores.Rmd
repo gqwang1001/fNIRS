@@ -29,11 +29,6 @@ colnames(s21.impute) = names1
 s22.impute = t(complete(score22.imputed))
 colnames(s22.impute) = names2
 
-
-corr21 = cor(s21.impute)
-image(corr21, axes = F)
-
-dim(dat.result$scores1)
 s1.level1 = dat.result$scores1[,1]
 s1.level2 = dat.result$scores1[,2]
 
