@@ -1,0 +1,82 @@
+---
+title: "VFT_SVM"
+output: html_document
+---
+
+```{r svm}
+library(e1071)
+load("vft_score_demog.rdata")
+svm.vft.input = data.frame(gender = vft.comb_data$gender, scale(vft.comb_data[,-c(1,2)]))
+svm_tune.vft = tune(svm, train.x = svm.vft.input, train.y = vft.comb_data$cam, kernel="linear", ranges=list(epsilon = seq(0,1,0.1), cost = 2^(2:9)))
+#svm_tune.vft$best.parameters
+# epsilon = 0; cost = 4
+svm.vft = svm_tune.vft$best.model
+svm_tune.vft$best.parameters
+weights.vft = t(svm.vft$coefs) %*% svm.vft$SV
+
+
+svm.vft.input.brain = svm.vft.input[,-c(1:9)]
+svm_tune.vft.brain = tune(svm, train.x = svm.vft.input.brain, train.y = vft.comb_data$cam, kernel="linear", ranges=list(epsilon = seq(0,1,0.1), cost = 2^(2:9)))
+svm.vft.brain = svm_tune.vft.brain$best.model
+weights.vft.brain = t(svm.vft.brain$coefs) %*% svm.vft.brain$SV
+
+write.csv(x = weights.vft.brain[1+3:54],file = "vft_brain_1.csv")
+write.csv(x = weights.vft.brain[1+55:106],file = "vft_brain_2.csv")
+write.csv(x = weights.vft.brain[108:159],file = "vft_brain_3.csv")
+
+write.csv(x = weights.vft[10+3:54],file = "vft_overall_1.csv")
+write.csv(x = weights.vft[10+55:106],file = "vft_overall_2.csv")
+write.csv(x = weights.vft[10+107:158],file = "vft_overall_3.csv")
+
+set.seed(1234)
+variables = 1:10# 1:10 means brain only, 1 means including demographic info
+nsubj = 53
+pred.vft.brain = 1:nsubj
+for(i in 1:nsubj){
+  test = vft.comb_data[i,]
+  train = vft.comb_data[-i,]
+  fitBrainCV = svm(x = train[,-variables], y = train$cam, kernel="linear",epsilon = 0,cost = 4,probability = T)
+  temp = predict(fitBrainCV,test[,-variables], decision.values =TRUE, probability = TRUE)
+  pred.vft.brain[i] = attr(temp, "probabilities")[,2]
+}
+
+variables1 = 1# 1:10 means brain only, 1 means including demographic info
+variables2 = 2:10
+nsubj = 53
+pred1.vft = 1:nsubj
+pred.vft.demo = 1:nsubj
+for(i in 1:nsubj){
+  test = vft.comb_data[i,]
+  train = vft.comb_data[-i,]
+  
+  fitsvm = svm(x = train[,-variables1], y = train$cam, kernel="linear",epsilon = 0,cost = 4,probability = T)
+  temp = predict(fitsvm,test[,-variables1], decision.values =TRUE, probability = TRUE)
+  pred1.vft[i] = attr(temp, "probabilities")[,2]
+  
+  fitsvm.demo = svm(x = train[,variables2], y = train$cam, kernel="linear",epsilon = 0,cost = 4,probability = T)
+  temp2 = predict(fitsvm.demo,test[,variables2], decision.values =TRUE, probability = TRUE)
+  pred.vft.demo[i] = attr(temp2, "probabilities")[,2]
+}
+library(pROC)
+par(mfrow = c(1,1))
+roc1.vft = roc(vft.comb_data$cam~pred.vft.brain[1:nsubj])
+roc2.vft = roc(vft.comb_data$cam~pred1.vft[1:nsubj])
+roc3.vft = roc(vft.comb_data$cam~pred.vft.demo[1:nsubj])
+
+plot(roc1.vft,main = paste("ROC curve (VFT)"),col = 1)
+#ci(roc(vft.comb_data$cam~pred.vft.brain[1:nsubj]),
+#     main = paste("ROC curve (VFT)"),col = 1)
+
+#plot(ci.se(roc1))
+lines(roc2.vft,col = 2)
+lines(roc3.vft,col = 3)
+
+auc1 = round(auc(roc1.vft),3); ci1.vft = round(as.numeric(ci(roc1.vft)),3)
+auc2 = round(auc(roc2.vft),3); ci2.vft = round(as.numeric(ci(roc2.vft)),3)
+auc3 = round(auc(roc3.vft),3); ci3.vft = round(as.numeric(ci(roc3.vft)),3)
+
+legend("bottomright",legend = c(paste0("Demographic and brain info, AUC = ", auc2,', CI (', ci2.vft[1],',',ci2.vft[3],')'), paste0("Brain info only, AUC = ", auc1,', CI (', ci1.vft[1],',',ci1.vft[3],')'), 
+                                paste0("Demographic info only, AUC = ", auc3,', CI (', ci3.vft[1],',',ci3.vft[3],')')), col = c(2,1,3),pch = "-",cex=0.7)
+
+
+```
